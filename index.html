@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MegaFonts — Fonts for endangered languages</title>
+
+  <link rel="icon" type="image/png" href="./favicon-96x96.png" sizes="96x96" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="shortcut icon" href="./favicon.ico" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+  <link rel="manifest" href="./site.webmanifest" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="./src/output.css" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    // ============================================
+    // MegaFonts — Dynamic Font Explorer
+    // Fonts sourced from: https://github.com/r3dtime/fonts
+    // ============================================
+
+    const REPO_OWNER = 'r3dtime';
+    const REPO_NAME = 'fonts';
+    const REPO_BRANCH = 'main';
+    const API_BASE = 'https://api.github.com/repos';
+    const RAW_BASE = 'https://raw.githubusercontent.com';
+
+    // ─── State ───
+    let allFonts = [];
+    let filteredFonts = [];
+    let selectedFonts = new Map(); // slug -> font object
+    let currentCategory = 'all';
+    let currentSort = 'popular';
+    let previewText = 'The quick brown fox jumps over the lazy dog';
+    let fontSize = 32;
+    let drawerExpanded = true;
+    let loadedFonts = new Set();
+    let fontLoadObserver = null;
+
+    // ─── Utility Functions ───
+    function slugify(name) {
+      return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    }
+
+    function displayName(slug) {
+      return slug
+              .replace(/[-_]/g, ' ')
+              .replace(/\b\w/g, l => l.toUpperCase())
+              .trim();
+    }
+
+    function inferCategory(fontName) {
+      const name = fontName.toLowerCase();
+      if (/mono|code|terminal|console|cursor|fira\s*code|source\s*code|jetbrains|hack|iosevka|dank|inconsolata|ubuntus?mono/.test(name)) return 'monospace';
+      if (/script|hand|write|calligraf|brush|cursive|danc|kaushan|pacifico|satisfy|great\s*vibes|shadow|sharpee|caveat/.test(name)) return 'handwriting';
+      if (/display|title|heading|poster|decor|novelty|bebas|oswald|anton|lobster|bungee|press\s*start|rubik\s*mono|righteous|bangers/.test(name)) return 'display';
+      if (/serif|roman|garamond|times|georgia|playfair|merriweather|lora|crimson|spectral|libre\s*baskerville|pt\s*serif|eb\s*garamond|noto\s*serif|source\s*serif/.test(name)) return 'serif';
+      return 'sans-serif';
+    }
+
+    function parseFontVariant(fileName) {
+      let name = fileName.replace(/\.(ttf|otf|woff2|eot)$/i, '');
+      name = name.toLowerCase();
+
+      let weight = 400;
+      let style = 'normal';
+
+      if (/_thin$/i.test(name)) weight = 100;
+      else if (/_extralight$/i.test(name)) weight = 200;
+      else if (/_light$/i.test(name)) weight = 300;
+      else if (/_normal$/i.test(name)) weight = 400;
+      else if (/_medium$/i.test(name)) weight = 500;
+      else if (/_semibold$/i.test(name)) weight = 600;
+      else if (/_bold$/i.test(name)) weight = 700;
+      else if (/_extrabold$/i.test(name)) weight = 800;
+      else if (/_black$/i.test(name)) weight = 900;
+
+      if (/\bitalic\b/i.test(name) || /\bit\b/i.test(name) || /_i\b/i.test(name) || /oblique/i.test(name)) style = 'italic';
+
+      return { weight, style };
+    }
+
+    // ─── API Functions ───
+    async function fetchGitHub(path = '') {
+      const url = `${API_BASE}/${REPO_OWNER}/${REPO_NAME}/contents/${path}?ref=${REPO_BRANCH}`;
+      const cacheKey = `fv_cache_${path}`;
+
+      // Check sessionStorage cache
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        try { return JSON.parse(cached); } catch (e) { /* ignore */ }
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        if (response.status === 403) throw new Error('GitHub API rate limit exceeded. Please try again later.');
+        throw new Error(`GitHub API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      sessionStorage.setItem(cacheKey, JSON.stringify(data));
+      return data;
+    }
+
+    async function discoverFonts() {
+      let rootContents;
+      try {
+        rootContents = await fetchGitHub();
+      } catch (e) {
+        throw e;
+      }
+
+      // Filter for directories (font folders)
+      const fontDirs = rootContents.filter(item => item.type === 'dir');
+
+      // Fetch contents of each font directory in parallel (batched)
+      const fonts = [];
+      const batchSize = 10;
+
+      for (let i = 0; i < fontDirs.length; i += batchSize) {
+        const batch = fontDirs.slice(i, i + batchSize);
+        const results = await Promise.allSettled(
+                batch.map(async (dir) => {
+                  try {
+                    const contents = await fetchGitHub(dir.path);
+                    const fontFiles = contents.filter(item =>
+                            item.type === 'file' && /\.(ttf|otf|woff2)$/i.test(item.name)
+                    );
+
+                    if (fontFiles.length === 0) return null;
+
+                    const variants = fontFiles.map(file => {
+                      const parsed = parseFontVariant(file.name);
+                      // Try to detect weight from filename if it follows patterns like "200Italic" or "_bold"
+                      return {
+                        name: file.name.replace(/\.(ttf|otf|woff2|eot)$/i, ''),
+                        fileName: file.name,
+                        path: file.path,
+                        url: `${RAW_BASE}/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/${file.path}`,
+                        weight: parsed.weight,
+                        style: parsed.style,
+                      };
+                    });
+
+                    // Group by weight to avoid duplicates, prefer ttf
+                    const uniqueVariants = [];
+                    const seen = new Set();
+                    for (const v of variants) {
+                      const key = `${v.weight}-${v.style}`;
+                      if (!seen.has(key)) {
+                        seen.add(key);
+                        uniqueVariants.push(v);
+                      }
+                    }
+                    uniqueVariants.sort((a, b) => a.weight - b.weight || a.style.localeCompare(b.style));
+
+                    const familyName = displayName(dir.name);
+                    const slug = slugify(dir.name);
+
+                    return {
+                      name: familyName,
+                      slug: slug,
+                      dirName: dir.name,
+                      category: inferCategory(dir.name + ' ' + variants.map(v => v.name).join(' ')),
+                      variants: uniqueVariants,
+                      variantCount: uniqueVariants.length,
+                      // Default variant for preview (prefer regular 400 normal)
+                      defaultVariant: uniqueVariants.find(v => v.weight === 400 && v.style === 'normal') || uniqueVariants[0],
+                    };
+                  } catch (e) {
+                    console.warn(`Failed to load font: ${dir.name}`, e);
+                    return null;
+                  }
+                })
+        );
+
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            fonts.push(result.value);
+          }
+        }
+      }
+
+      return fonts;
+    }
+
+    // ─── Font Loading ───
+    async function loadFontVariant(fontFamily, variant) {
+      const fontKey = `${fontFamily}-${variant.weight}-${variant.style}`;
+      if (loadedFonts.has(fontKey)) return true;
+      const fontFace = new FontFace(fontFamily, `url(${variant.url})`, {
+        weight: String(variant.weight),
+        style: variant.style,
+      });
+
+      try {
+        const loaded = await fontFace.load();
+        document.fonts.add(loaded);
+        loadedFonts.add(fontKey);
+        return true;
+      } catch (e) {
+        console.warn(`Failed to load font: ${fontFamily} ${variant.name}`, e);
+        return false;
+      }
+    }
+
+    // Load the default variant for a font card
+    async function loadFontPreview(font) {
+      if (font.defaultVariant) {
+        return loadFontVariant(font.name, font.defaultVariant);
+      }
+      return false;
+    }
+
+    // ─── Rendering ───
+    function renderSkeletons(count = 12) {
+      const container = document.getElementById('loading-skeleton');
+      let html = '';
+      for (let i = 0; i < count; i++) {
+        html += `
+            <div class="rounded-2xl overflow-hidden bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
+                <div class="p-6">
+                    <div class="skeleton h-5 w-24 rounded mb-4"></div>
+                    <div class="skeleton h-10 w-full rounded mb-3"></div>
+                    <div class="skeleton h-10 w-3/4 rounded mb-4"></div>
+                    <div class="flex items-center gap-2">
+                        <div class="skeleton h-6 w-16 rounded-full"></div>
+                        <div class="skeleton h-6 w-12 rounded-full"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+      }
+      container.innerHTML = html;
+    }
+
+    function renderFontCards(fonts) {
+      const grid = document.getElementById('fonts-grid');
+      const noResults = document.getElementById('no-results');
+
+      if (fonts.length === 0) {
+        grid.innerHTML = '';
+        noResults.classList.remove('hidden');
+        return;
+      }
+
+      noResults.classList.add('hidden');
+
+      grid.innerHTML = fonts.map(font => renderFontCard(font)).join('');
+
+      // Set up lazy loading with IntersectionObserver
+      setupLazyLoading();
+
+      // Re-render lucide icons
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function renderFontCard(font) {
+      const isSelected = selectedFonts.has(font.slug);
+      const categoryLabels = {
+        'sans-serif': 'Sans Serif',
+        'serif': 'Serif',
+        'display': 'Display',
+        'handwriting': 'Handwriting',
+        'monospace': 'Monospace'
+      };
+
+      return `
+        <div class="font-card group rounded-2xl overflow-hidden bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 hover:border-brand-400 dark:hover:border-brand-500 hover:shadow-lg transition-all duration-300" data-slug="${font.slug}">
+            <div class="p-5 md:p-6">
+                <div class="flex items-start justify-between mb-3">
+                    <div>
+                        <h3 class="text-base font-semibold text-gray-900 dark:text-white">${font.name}</h3>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">${font.variantCount} variant${font.variantCount !== 1 ? 's' : ''}</p>
+                    </div>
+                    <button class="font-select-btn p-2 rounded-xl transition-all ${isSelected ? 'bg-brand-600 text-white hover:bg-brand-700' : 'hover:bg-brand-50 dark:hover:bg-brand-950 text-gray-400 hover:text-brand-600'}" data-slug="${font.slug}" title="${isSelected ? 'Remove from selection' : 'Add to selection'}">
+                        <i data-lucide="${isSelected ? 'check' : 'plus'}" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <div class="font-sample-wrapper min-h-[80px] flex items-center" data-slug="${font.slug}" data-font-family="${font.name}">
+                    <p class="font-sample text-gray-800 dark:text-gray-200 leading-snug transition-transform duration-300 cursor-pointer overflow-hidden"
+                       style="font-size: ${fontSize}px; font-family: '${font.name}', sans-serif; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;"
+                       data-slug="${font.slug}"
+                       title="Click to view details">
+                        ${previewText}
+                    </p>
+                </div>
+                <div class="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                    <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">${categoryLabels[font.category] || font.category}</span>
+                    <button class="ml-auto text-sm text-brand-600 hover:text-brand-700 font-medium flex items-center gap-1 transition-colors" onclick="openModal('${font.slug}')">
+                        View details <i data-lucide="chevron-right" class="w-3 h-3"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    }
+
+    function setupLazyLoading() {
+      // Disconnect previous observer
+      if (fontLoadObserver) fontLoadObserver.disconnect();
+
+      fontLoadObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const el = entry.target;
+            const slug = el.dataset.slug;
+            const font = allFonts.find(f => f.slug === slug);
+            if (font) {
+              loadFontPreview(font).then(() => {
+                el.classList.add('font-preview-loaded');
+              });
+            }
+            fontLoadObserver.unobserve(el);
+          }
+        });
+      }, { rootMargin: '200px' });
+
+      document.querySelectorAll('.font-sample-wrapper').forEach(el => {
+        fontLoadObserver.observe(el);
+      });
+    }
+
+    // ─── Modal ───
+    async function openModal(slug) {
+      const font = allFonts.find(f => f.slug === slug);
+      if (!font) return;
+
+      const modal = document.getElementById('font-modal');
+      const backdrop = document.getElementById('modal-backdrop');
+      const content = document.getElementById('modal-content');
+
+      document.getElementById('modal-font-name').textContent = font.name;
+      document.getElementById('modal-font-meta').textContent = `${font.variantCount} variant${font.variantCount !== 1 ? 's' : ''} · ${font.category}`;
+
+      // Load all variants for this font
+      const variantPromises = font.variants.map(v => loadFontVariant(font.name, v));
+      await Promise.allSettled(variantPromises);
+
+      // Build modal content
+      const categoryLabels = {
+        'sans-serif': 'Sans Serif',
+        'serif': 'Serif',
+        'display': 'Display',
+        'handwriting': 'Handwriting',
+        'monospace': 'Monospace'
+      };
+
+      let html = `
+        <!-- Large preview -->
+        <div class="mb-8">
+            <div class="bg-gray-50 dark:bg-gray-800/50 rounded-2xl p-8 mb-6">
+                <p style="font-family: '${font.name}', sans-serif; font-size: 48px; line-height: 1.2;" class="text-gray-900 dark:text-white break-words">${previewText}</p>
+            </div>
+            <div class="flex items-center gap-2 mb-6">
+                <input id="modal-preview-input" type="text" value="${previewText}"
+                    placeholder="Type something..."
+                    class="flex-1 px-4 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl border border-transparent focus:border-brand-500 outline-none transition-all text-sm">
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-500">Size</label>
+                    <input id="modal-size-slider" type="range" min="16" max="120" value="48" class="w-24 accent-brand-600">
+                    <span id="modal-size-value" class="text-sm font-mono text-gray-500 w-10">48px</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Variants / Weights -->
+        <div class="mb-8">
+            <h3 class="text-lg font-semibold mb-4">Variants</h3>
+            <div class="space-y-3">
+                ${font.variants.map(v => `
+                    <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl group hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                        <div class="flex-1 min-w-0">
+                            <p style="font-family: '${font.name}', sans-serif; font-weight: ${v.weight}; font-style: ${v.style}; font-size: 20px;" class="text-gray-900 dark:text-white break-words">${previewText}</p>
+                            <p class="text-xs text-gray-500 mt-1">${v.name}</p>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0 ml-4">
+                            <span class="text-xs font-mono text-gray-400">${v.weight}</span>
+                            <a href="${v.url}" download="${v.fileName}" target="_blank"
+                               class="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" title="Download TTF">
+                                <i data-lucide="download" class="w-4 h-4"></i>
+                            </a>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+
+        <!-- CSS Code -->
+        <div class="mb-8">
+            <h3 class="text-lg font-semibold mb-4">Use in your project</h3>
+
+            <!-- Tab buttons -->
+            <div class="flex gap-2 mb-3">
+                <button class="modal-tab-btn active px-3 py-1.5 text-sm font-medium rounded-lg bg-brand-600 text-white transition-colors" data-tab="css">@font-face CSS</button>
+                <button class="modal-tab-btn px-3 py-1.5 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" data-tab="html">HTML Embed</button>
+            </div>
+
+            <!-- CSS tab content -->
+            <div class="modal-tab-content" id="modal-tab-css">
+                <div class="relative">
+                    <pre class="bg-gray-100 dark:bg-gray-800 rounded-xl p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap text-gray-800 dark:text-gray-200">${generateFontFaceCSS(font)}</pre>
+                    <button class="copy-modal-code absolute top-2 right-2 p-2 rounded-lg bg-white dark:bg-gray-700 shadow hover:shadow-md transition-all" title="Copy code" data-tab="css">
+                        <i data-lucide="copy" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="modal-tab-content hidden" id="modal-tab-html">
+                <div class="relative">
+                    <pre class="bg-gray-100 dark:bg-gray-800 rounded-xl p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap text-gray-800 dark:text-gray-200">${escapeHtml(generateHtmlEmbed(font))}</pre>
+                    <button class="copy-modal-code absolute top-2 right-2 p-2 rounded-lg bg-white dark:bg-gray-700 shadow hover:shadow-md transition-all" title="Copy code" data-tab="html">
+                        <i data-lucide="copy" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Download All -->
+        <div class="mb-4">
+            <h3 class="text-lg font-semibold mb-4">Download</h3>
+            <div class="flex flex-wrap gap-2">
+                ${font.variants.map(v => `
+                    <a href="${v.url}" download="${v.fileName}" target="_blank"
+                       class="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl transition-colors text-sm">
+                        <i data-lucide="download" class="w-4 h-4"></i>
+                        ${v.name} <span class="text-xs text-gray-500">.ttf</span>
+                    </a>
+                `).join('')}
+            </div>
+        </div>
+    `;
+
+      content.innerHTML = html;
+      modal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+
+      // Re-render lucide icons
+      if (window.lucide) lucide.createIcons();
+
+      // Modal-specific event listeners
+      const previewInput = document.getElementById('modal-preview-input');
+      const sizeSlider = document.getElementById('modal-size-slider');
+      const sizeValue = document.getElementById('modal-size-value');
+      const largePreview = content.querySelector('[style*="font-size: 48px"]');
+
+      if (previewInput) {
+        previewInput.addEventListener('input', (e) => {
+          const text = e.target.value;
+          const previewEls = content.querySelectorAll('[style*="font-family"]');
+          previewEls.forEach(el => {
+            if (el.tagName === 'P' && !el.classList.contains('text-xs')) {
+              el.textContent = text;
+            }
+          });
+        });
+      }
+
+      if (sizeSlider) {
+        sizeSlider.addEventListener('input', (e) => {
+          const size = e.target.value;
+          sizeValue.textContent = size + 'px';
+          if (largePreview) {
+            largePreview.style.fontSize = size + 'px';
+          }
+        });
+      }
+
+      // Tab switching
+      content.querySelectorAll('.modal-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          content.querySelectorAll('.modal-tab-btn').forEach(b => {
+            b.classList.remove('active', 'bg-brand-600', 'text-white');
+            b.classList.add('bg-gray-100', 'dark:bg-gray-800', 'text-gray-700', 'dark:text-gray-300');
+          });
+          btn.classList.add('active', 'bg-brand-600', 'text-white');
+          btn.classList.remove('bg-gray-100', 'dark:bg-gray-800', 'text-gray-700', 'dark:text-gray-300');
+
+          const tab = btn.dataset.tab;
+          content.querySelectorAll('.modal-tab-content').forEach(tc => tc.classList.add('hidden'));
+          document.getElementById(`modal-tab-${tab}`).classList.remove('hidden');
+        });
+      });
+
+      // Copy buttons
+      content.querySelectorAll('.copy-modal-code').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab;
+          let code;
+          if (tab === 'css') {
+            code = generateFontFaceCSS(font);
+          } else {
+            code = generateHtmlEmbed(font);
+          }
+          navigator.clipboard.writeText(code).then(() => {
+            showToast('Code copied to clipboard!');
+          });
+        });
+      });
+    }
+
+    function closeModal() {
+      const modal = document.getElementById('font-modal');
+      modal.classList.add('hidden');
+      document.body.style.overflow = '';
+    }
+
+    // ─── Code Generation ───
+    function generateFontFaceCSS(font) {
+      return font.variants.map(v => {
+        return `@font-face {\n  font-family: '${font.name}';\n  src: url('${v.url}') format('truetype');\n  font-weight: ${v.weight};\n  font-style: ${v.style};\n}`;
+      }).join('\n\n');
+    }
+
+    function generateHtmlEmbed(font) {
+      const css = generateFontFaceCSS(font);
+      return `<style>\n${css}\n</style>`;
+    }
+
+    function generateSelectedCode(tab) {
+      if (selectedFonts.size === 0) return '';
+
+      const allFontFaces = [];
+
+      for (const [slug, font] of selectedFonts) {
+        font.variants.forEach(v => {
+          allFontFaces.push(`@font-face {\n  font-family: '${font.name}';\n  src: url('${v.url}') format('truetype');\n  font-weight: ${v.weight};\n  font-style: ${v.style};\n}`);
+        });
+      }
+
+      if (tab === 'import') {
+        return allFontFaces.join('\n\n');
+      } else {
+        return `<link rel="stylesheet" href="your-fonts.css">\n\n<!-- Or embed directly: -->\n<style>\n${allFontFaces.join('\n\n')}\n</style>`;
+      }
+    }
+
+    // ─── Drawer ───
+    function updateDrawer() {
+      const drawer = document.getElementById('drawer');
+      const countEl = document.getElementById('selected-count');
+      const drawerCount = document.getElementById('drawer-count');
+      const fontsContainer = document.getElementById('drawer-fonts');
+      const codeOutput = document.getElementById('code-output');
+
+      if (selectedFonts.size === 0) {
+        drawer.classList.add('hidden');
+        countEl.classList.add('hidden');
+        return;
+      }
+
+      drawer.classList.remove('hidden');
+      countEl.classList.remove('hidden');
+      countEl.textContent = selectedFonts.size;
+      drawerCount.textContent = selectedFonts.size;
+
+      fontsContainer.innerHTML = '';
+      for (const [slug, font] of selectedFonts) {
+        const tag = document.createElement('div');
+        tag.className = 'inline-flex items-center gap-2 px-3 py-1.5 bg-brand-50 dark:bg-brand-950 text-brand-700 dark:text-brand-300 rounded-xl text-sm font-medium';
+        tag.innerHTML = `
+            <span>${font.name}</span>
+            <button class="remove-font-btn hover:bg-brand-100 dark:hover:bg-brand-900 rounded-full p-0.5 transition-colors" data-slug="${slug}">
+                <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
+        `;
+        fontsContainer.appendChild(tag);
+      }
+
+      // Update code output
+      updateCodeOutput();
+
+      // Re-render icons
+      if (window.lucide) lucide.createIcons();
+
+      // Attach remove buttons
+      fontsContainer.querySelectorAll('.remove-font-btn').forEach(btn => {
+        btn.addEventListener('click', () => toggleFontSelection(btn.dataset.slug));
+      });
+    }
+
+    function updateCodeOutput() {
+      const codeOutput = document.getElementById('code-output');
+      const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab || 'import';
+      codeOutput.textContent = generateSelectedCode(activeTab);
+    }
+
+    // ─── Filter & Sort ───
+    function filterAndSort() {
+      let fonts = [...allFonts];
+
+      // Category filter
+      if (currentCategory !== 'all') {
+        fonts = fonts.filter(f => f.category === currentCategory);
+      }
+
+      // Search filter
+      const search = document.getElementById('search-input').value.toLowerCase().trim();
+      if (search) {
+        fonts = fonts.filter(f =>
+                f.name.toLowerCase().includes(search) ||
+                f.category.toLowerCase().includes(search) ||
+                f.dirName.toLowerCase().includes(search)
+        );
+      }
+
+      // Sort
+      switch (currentSort) {
+        case 'name':
+          fonts.sort((a, b) => a.name.localeCompare(b.name));
+          break;
+        case 'newest':
+          // Reverse order (most recently added dirs last in API response)
+          fonts.reverse();
+          break;
+        case 'popular':
+        default:
+          // Keep original order (repo order)
+          break;
+      }
+
+      filteredFonts = fonts;
+      renderFontCards(fonts);
+    }
+
+    // ─── Selection ───
+    function toggleFontSelection(slug) {
+      const font = allFonts.find(f => f.slug === slug);
+      if (!font) return;
+
+      if (selectedFonts.has(slug)) {
+        selectedFonts.delete(slug);
+      } else {
+        selectedFonts.set(slug, font);
+      }
+
+      // Update card button visuals
+      document.querySelectorAll(`.font-select-btn[data-slug="${slug}"]`).forEach(btn => {
+        const isSelected = selectedFonts.has(slug);
+        btn.innerHTML = `<i data-lucide="${isSelected ? 'check' : 'plus'}" class="w-4 h-4"></i>`;
+        if (isSelected) {
+          btn.classList.add('bg-brand-600', 'text-white', 'hover:bg-brand-700');
+          btn.classList.remove('hover:bg-brand-50', 'dark:hover:bg-brand-950', 'text-gray-400', 'hover:text-brand-600');
+        } else {
+          btn.classList.remove('bg-brand-600', 'text-white', 'hover:bg-brand-700');
+          btn.classList.add('hover:bg-brand-50', 'dark:hover:bg-brand-950', 'text-gray-400', 'hover:text-brand-600');
+        }
+        if (window.lucide) lucide.createIcons();
+      });
+
+      updateDrawer();
+      filterAndSort(); // Re-render to update selection state
+    }
+
+    function clearSelection() {
+      selectedFonts.clear();
+      updateDrawer();
+      filterAndSort();
+    }
+
+    // ─── Toast ───
+    function showToast(message) {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast flex items-center gap-2 px-4 py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-xl shadow-lg text-sm font-medium';
+      toast.innerHTML = `<i data-lucide="check-circle" class="w-4 h-4"></i><span>${message}</span>`;
+      container.appendChild(toast);
+      if (window.lucide) lucide.createIcons();
+      setTimeout(() => toast.remove(), 2500);
+    }
+
+    function showError(message) {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast flex items-center gap-2 px-4 py-3 bg-red-600 text-white rounded-xl shadow-lg text-sm font-medium';
+      toast.innerHTML = `<i data-lucide="alert-circle" class="w-4 h-4"></i><span>${message}</span>`;
+      container.appendChild(toast);
+      if (window.lucide) lucide.createIcons();
+      setTimeout(() => toast.remove(), 4000);
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ─── Event Listeners ───
+    function setupEventListeners() {
+      // Search
+      document.getElementById('search-input').addEventListener('input', debounce(filterAndSort, 300));
+
+      // Category filters
+      document.querySelectorAll('.tag-chip[data-category]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tag-chip[data-category]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentCategory = btn.dataset.category;
+          filterAndSort();
+        });
+      });
+
+      // Sort
+      document.getElementById('sort-select').addEventListener('change', (e) => {
+        currentSort = e.target.value;
+        filterAndSort();
+      });
+
+      // Preview text
+      const previewInput = document.getElementById('preview-text-input');
+      previewInput.addEventListener('input', () => {
+        previewText = previewInput.value || 'The quick brown fox jumps over the lazy dog';
+        document.querySelectorAll('.font-sample').forEach(el => {
+          el.textContent = previewText;
+        });
+      });
+
+      // Font size
+      const sizeSlider = document.getElementById('font-size-slider');
+      const sizeValue = document.getElementById('font-size-value');
+      sizeSlider.addEventListener('input', () => {
+        fontSize = parseInt(sizeSlider.value);
+        sizeValue.textContent = fontSize + 'px';
+        document.querySelectorAll('.font-sample').forEach(el => {
+          el.style.fontSize = fontSize + 'px';
+        });
+      });
+
+      // Font card clicks
+      document.getElementById('fonts-grid').addEventListener('click', (e) => {
+        // Select button
+        const selectBtn = e.target.closest('.font-select-btn');
+        if (selectBtn) {
+          e.stopPropagation();
+          toggleFontSelection(selectBtn.dataset.slug);
+          return;
+        }
+
+        // Font sample click -> open modal
+        const fontSample = e.target.closest('.font-sample');
+        if (fontSample) {
+          openModal(fontSample.dataset.slug);
+          return;
+        }
+
+        // "View details" click
+        const viewDetails = e.target.closest('[onclick]');
+        if (viewDetails) return; // handled by onclick
+      });
+
+      // Modal close
+      document.getElementById('modal-close').addEventListener('click', closeModal);
+      document.getElementById('modal-backdrop').addEventListener('click', closeModal);
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeModal();
+      });
+
+      // Drawer
+      document.getElementById('btn-selected-families').addEventListener('click', () => {
+        const expanded = document.getElementById('drawer-expanded');
+        const collapsed = document.getElementById('drawer-collapsed');
+        drawerExpanded = !drawerExpanded;
+        if (drawerExpanded) {
+          expanded.style.maxHeight = '400px';
+        } else {
+          expanded.style.maxHeight = '0px';
+        }
+      });
+
+      document.getElementById('drawer-toggle').addEventListener('click', () => {
+        drawerExpanded = !drawerExpanded;
+        const expanded = document.getElementById('drawer-expanded');
+        if (drawerExpanded) {
+          expanded.style.maxHeight = '400px';
+        } else {
+          expanded.style.maxHeight = '0px';
+        }
+      });
+
+      document.getElementById('drawer-clear').addEventListener('click', clearSelection);
+
+      // Tab buttons in drawer
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach(b => {
+            b.classList.remove('active', 'bg-brand-600', 'text-white');
+            b.classList.add('bg-gray-100', 'dark:bg-gray-800');
+          });
+          btn.classList.add('active', 'bg-brand-600', 'text-white');
+          btn.classList.remove('bg-gray-100', 'dark:bg-gray-800');
+          updateCodeOutput();
+        });
+      });
+
+      // Copy code button
+      document.getElementById('copy-code').addEventListener('click', () => {
+        const code = document.getElementById('code-output').textContent;
+        navigator.clipboard.writeText(code).then(() => {
+          showToast('Code copied to clipboard!');
+        });
+      });
+
+      // Dark mode toggle
+      document.getElementById('btn-dark-toggle').addEventListener('click', () => {
+        document.documentElement.classList.toggle('dark');
+        localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+      });
+
+      // Init dark mode from preference
+      if (localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      }
+    }
+
+    function debounce(fn, delay) {
+      let timeout;
+      return function (...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fn.apply(this, args), delay);
+      };
+    }
+
+    // ─── Initialize ───
+    async function init() {
+      setupEventListeners();
+      renderSkeletons();
+
+      try {
+        allFonts = await discoverFonts();
+
+        if (allFonts.length === 0) {
+          showError('No fonts found in the repository. Please check the repo structure.');
+          return;
+        }
+
+        document.getElementById('loading-skeleton').innerHTML = '';
+        filterAndSort();
+
+        // Pre-load first batch of fonts
+        const previewBatch = allFonts.slice(0, 6);
+        await Promise.allSettled(previewBatch.map(f => loadFontPreview(f)));
+        renderFontCards(filteredFonts);
+
+      } catch (error) {
+        console.error('Failed to discover fonts:', error);
+        document.getElementById('loading-skeleton').innerHTML = '';
+        showError(`Failed to load fonts: ${error.message}`);
+      }
+    }
+
+    // Start app
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+    * { font-family: 'Inter', system-ui, sans-serif; }
+
+    .font-preview-loaded { font-display: swap; }
+
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    .font-card:hover .font-card-overlay { opacity: 1; }
+    .font-card:hover .font-sample { transform: scale(1.02); }
+
+    .drawer-enter { animation: slideUp 0.3s ease-out; }
+    @keyframes slideUp {
+      from { transform: translateY(100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .modal-enter { animation: modalIn 0.25s ease-out; }
+    @keyframes modalIn {
+      from { transform: scale(0.95); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .tag-chip.active { background: #4263eb; color: white; border-color: #4263eb; }
+
+    .skeleton {
+      background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+      background-size: 200% 100%;
+      animation: skeleton 1.5s infinite;
+    }
+    .dark .skeleton {
+      background: linear-gradient(90deg, #2d3748 25%, #374151 50%, #2d3748 75%);
+      background-size: 200% 100%;
+    }
+    @keyframes skeleton {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    .toast { animation: toastIn 0.3s ease-out, toastOut 0.3s ease-in 2.2s; }
+    @keyframes toastIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+  </style>
+  
+</head>
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen transition-colors duration-300">
+
+<!-- Toast Container -->
+<div id="toast-container" class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2"></div>
+
+<!-- Header -->
+<header class="sticky top-0 z-50 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6">
+    <div class="flex items-center justify-between h-16">
+      <!-- Logo -->
+      <div class="flex items-center gap-2 shrink-0">
+        <div class="w-9 h-9 bg-brand-600 rounded-xl flex items-center justify-center">
+          <span class="text-brand-600 font-bold text-lg dark:text-white">Mf</span>
+        </div>
+        <span class="text-xl font-bold hidden sm:block">Mega<span class="text-brand-600">Fonts</span></span>
+      </div>
+
+      <!-- Search -->
+      <div class="flex-1 max-w-xl mx-4">
+        <div class="relative">
+          <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"></i>
+          <input id="search-input" type="text" placeholder="Search fonts..."
+                 class="w-full pl-10 pr-4 py-2.5 bg-gray-100 dark:bg-gray-800 rounded-xl border border-transparent focus:border-brand-500 focus:bg-white dark:focus:bg-gray-900 outline-none transition-all text-sm">
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex items-center gap-2">
+        <button id="btn-dark-toggle" class="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="Toggle dark mode">
+          <i data-lucide="moon" class="w-5 h-5 dark:hidden"></i>
+          <i data-lucide="sun" class="w-5 h-5 hidden dark:block"></i>
+        </button>
+        <button id="btn-selected-families" class="relative p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title="Selected fonts">
+          <i data-lucide="shopping-bag" class="w-5 h-5"></i>
+          <span id="selected-count" class="absolute -top-1 -right-1 w-5 h-5 bg-brand-600 text-white text-xs rounded-full flex items-center justify-center font-semibold hidden">0</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Toolbar -->
+<div class="sticky top-16 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6">
+    <div class="flex items-center gap-3 py-3 overflow-x-auto hide-scrollbar">
+      <!-- Category filters -->
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Category</span>
+      </div>
+      <button class="tag-chip active px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="all">All</button>
+      <button class="tag-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="serif">Serif</button>
+      <button class="tag-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="sans-serif">Sans Serif</button>
+      <button class="tag-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="display">Display</button>
+      <button class="tag-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="handwriting">Handwriting</button>
+      <button class="tag-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 dark:border-gray-600 transition-all hover:border-brand-500" data-category="monospace">Monospace</button>
+
+      <div class="w-px h-6 bg-gray-300 dark:bg-gray-700 shrink-0"></div>
+
+      <!-- Sort -->
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Sort</span>
+        <select id="sort-select" class="text-xs bg-gray-100 dark:bg-gray-800 rounded-lg px-2 py-1.5 border-0 outline-none cursor-pointer">
+          <option value="popular">Popular</option>
+          <option value="name">A–Z</option>
+          <option value="newest">Newest</option>
+        </select>
+      </div>
+
+      <div class="w-px h-6 bg-gray-300 dark:bg-gray-700 shrink-0"></div>
+
+      <!-- Preview text -->
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:block">Preview</span>
+        <input id="preview-text-input" type="text" value="The quick brown fox jumps over the lazy dog"
+               placeholder="Type preview text..."
+               class="text-xs bg-gray-100 dark:bg-gray-800 rounded-lg px-3 py-1.5 border-0 outline-none w-44 sm:w-64">
+      </div>
+
+      <div class="w-px h-6 bg-gray-300 dark:bg-gray-700 shrink-0"></div>
+
+      <!-- Size slider -->
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:block">Size</span>
+        <input id="font-size-slider" type="range" min="12" max="72" value="32" class="w-20 sm:w-28 accent-brand-600">
+        <span id="font-size-value" class="text-xs font-mono text-gray-500 w-8">32px</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Main Content -->
+<main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+  <div id="fonts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <!-- Font cards rendered here -->
+  </div>
+  <div id="no-results" class="hidden text-center py-20">
+    <i data-lucide="search-x" class="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4"></i>
+    <h3 class="text-xl font-semibold text-gray-500 dark:text-gray-400">No fonts found</h3>
+    <p class="text-gray-400 dark:text-gray-600 mt-1">Try adjusting your search or filters</p>
+  </div>
+  <div id="loading-skeleton" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <!-- Skeletons -->
+  </div>
+</main>
+
+<!-- Font Detail Modal -->
+<div id="font-modal" class="fixed inset-0 z-[60] hidden">
+  <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" id="modal-backdrop"></div>
+  <div class="absolute inset-4 md:inset-8 lg:inset-12 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden modal-enter flex flex-col">
+    <div class="flex items-center justify-between p-4 md:p-6 border-b border-gray-200 dark:border-gray-800">
+      <div>
+        <h2 id="modal-font-name" class="text-2xl font-bold"></h2>
+        <p id="modal-font-meta" class="text-sm text-gray-500 mt-1"></p>
+      </div>
+      <button id="modal-close" class="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+    </div>
+    <div id="modal-content" class="flex-1 overflow-y-auto p-4 md:p-6">
+      <!-- Modal content rendered dynamically -->
+    </div>
+  </div>
+</div>
+
+<!-- Selected Families Drawer -->
+<div id="drawer" class="fixed bottom-0 left-0 right-0 z-50 hidden">
+  <div class="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-2xl drawer-enter">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6">
+      <div class="flex items-center justify-between py-3">
+        <h3 class="font-semibold"><span id="drawer-count">0</span> Fonts Selected</h3>
+        <div class="flex items-center gap-2">
+          <button id="drawer-clear" class="px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg transition-colors">Clear All</button>
+          <button id="drawer-toggle" class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <i data-lucide="chevron-down" class="w-5 h-5"></i>
+          </button>
+        </div>
+      </div>
+      <div id="drawer-collapsed" class="overflow-hidden transition-all duration-300" style="max-height: 0;">
+        <!-- Collapsed content -->
+      </div>
+      <div id="drawer-expanded" class="overflow-hidden transition-all duration-300" style="max-height: 400px;">
+        <div id="drawer-fonts" class="flex flex-wrap gap-3 pb-4">
+          <!-- Selected font tags -->
+        </div>
+        <!-- Code export -->
+        <div class="border-t border-gray-200 dark:border-gray-800 pt-4 pb-4">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-sm font-semibold">Use in your project</h4>
+            <div class="flex gap-2">
+              <button class="tab-btn active px-3 py-1 text-xs rounded-lg bg-brand-600 text-white" data-tab="import">@import</button>
+              <button class="tab-btn px-3 py-1 text-xs rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700" data-tab="link">&lt;link&gt;</button>
+            </div>
+          </div>
+          <div class="relative">
+            <pre id="code-output" class="bg-gray-100 dark:bg-gray-800 rounded-xl p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap"></pre>
+            <button id="copy-code" class="absolute top-2 right-2 p-2 rounded-lg bg-white dark:bg-gray-700 shadow hover:shadow-md transition-all" title="Copy code">
+              <i data-lucide="copy" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
